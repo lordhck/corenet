@@ -1,0 +1,7 @@
+# Build output (the README builds these into the repository root).
+/corenet
+/corenetd
+
+# Go
+*.test
+*.out

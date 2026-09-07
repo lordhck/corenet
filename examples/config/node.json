@@ -1,0 +1,16 @@
+{
+  "node": {
+    "id": "node-a",
+    "name": "laptop"
+  },
+  "listen": {
+    "dns": "127.0.0.1:53",
+    "http": "127.0.0.1:80",
+    "peer": "0.0.0.0:7000",
+    "control": "/run/corenet/corenetd.sock"
+  },
+  "services": [
+    { "name": "hello.core", "address": "127.0.0.1", "port": 8081 }
+  ],
+  "nodes": []
+}
