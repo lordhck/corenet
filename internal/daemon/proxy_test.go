@@ -104,3 +104,17 @@ func atoi(t *testing.T, value string) int {
 	}
 	return port
 }
+
+func TestProxyConflictedNameIs409(t *testing.T) {
+	reg := registry.New()
+	reg.SetDocker(nil, []protocol.Conflict{{Name: "blog.core", Reason: "claimed by 2 Docker containers"}})
+	proxy := NewProxy(reg, log.New(io.Discard, "", 0))
+
+	rec := request(t, proxy, "blog.core")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "2 Docker containers") {
+		t.Errorf("the page should explain the conflict: %s", body)
+	}
+}

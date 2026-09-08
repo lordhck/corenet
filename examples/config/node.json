@@ -10,7 +10,16 @@
     "control": "/run/corenet/corenetd.sock"
   },
   "services": [
-    { "name": "hello.core", "address": "127.0.0.1", "port": 8081 }
+    {
+      "name": "hello.core",
+      "address": "127.0.0.1",
+      "port": 8081
+    }
   ],
-  "nodes": []
+  "nodes": [],
+  "docker": {
+    "enabled": true,
+    "network": "",
+    "poll_interval_seconds": 5
+  }
 }

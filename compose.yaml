@@ -1,0 +1,18 @@
+# A CoreNet service is an ordinary container with three labels.
+#
+# Start it with corenetd running on the host, and wiki.core resolves without
+# any CoreNet command being run:
+#
+#   docker compose up -d
+#   corenet service list
+#
+# corenet.port is the port inside the container, not a published host port:
+# corenetd reaches the container on its Docker network address.
+
+services:
+  wiki:
+    image: nginx:alpine
+    labels:
+      corenet.name: wiki.core
+      corenet.service: http
+      corenet.port: "80"

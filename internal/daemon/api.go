@@ -27,7 +27,7 @@ type API struct {
 func (a *API) ControlMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/status", a.handleStatus)
-	mux.HandleFunc("GET /v1/services", a.handleServices(a.Dir.List))
+	mux.HandleFunc("GET /v1/services", a.handleServices(a.Dir.List, true))
 	mux.HandleFunc("POST /v1/services", a.handleAddService)
 	mux.HandleFunc("DELETE /v1/services/{name}", a.handleRemoveService)
 	mux.HandleFunc("GET /v1/resolve", a.handleResolve)
@@ -42,7 +42,7 @@ func (a *API) ControlMux() *http.ServeMux {
 func (a *API) PeerMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", a.handleInfo)
-	mux.HandleFunc("GET /v1/services", a.handleServices(a.Dir.ListLocal))
+	mux.HandleFunc("GET /v1/services", a.handleServices(a.Dir.ListLocal, false))
 	mux.HandleFunc("GET /v1/resolve", a.handleResolve)
 	mux.HandleFunc("/", a.handleNotFound)
 	return mux
@@ -56,13 +56,20 @@ func (a *API) handleInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, a.Info())
 }
 
-func (a *API) handleServices(list func() []protocol.Service) http.HandlerFunc {
+// handleServices lists services. On the control socket it also reports the
+// names this node knows but refuses to route; the peer listener never does,
+// since a name a node cannot route is not a name it can offer.
+func (a *API) handleServices(list func() []protocol.Service, withConflicts bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		services := list()
 		if services == nil {
 			services = []protocol.Service{}
 		}
-		writeJSON(w, http.StatusOK, protocol.ServiceList{Services: services})
+		body := protocol.ServiceList{Services: services}
+		if withConflicts {
+			body.Conflicts = a.Dir.Conflicts()
+		}
+		writeJSON(w, http.StatusOK, body)
 	}
 }
 
@@ -106,6 +113,11 @@ func (a *API) handleResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	svc, ok := a.Dir.Lookup(name)
 	if !ok {
+		if conflict, conflicted := a.Dir.Conflict(name); conflicted {
+			writeError(w, http.StatusConflict, protocol.CodeConflict,
+				name+" is not routed: "+conflict.Reason)
+			return
+		}
 		writeError(w, http.StatusNotFound, protocol.CodeNotFound, "unknown service: "+name)
 		return
 	}

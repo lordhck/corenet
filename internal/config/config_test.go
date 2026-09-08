@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, body string) string {
@@ -54,6 +55,7 @@ func TestLoadRejectsBadConfigurations(t *testing.T) {
 		"bad listen":      `{"listen": {"dns": "127.0.0.1"}}`,
 		"bad node":        `{"nodes": ["192.168.1.20"]}`,
 		"empty node id":   `{"node": {"id": ""}}`,
+		"negative poll":   `{"docker": {"poll_interval_seconds": -1}}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -68,6 +70,45 @@ func TestLoadMissingFileReportsPath(t *testing.T) {
 	_, err := Load(filepath.Join(t.TempDir(), "absent.json"))
 	if err == nil || !os.IsNotExist(err) {
 		t.Fatalf("err = %v, want not-exist", err)
+	}
+}
+
+func TestDockerDefaults(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{"node": {"id": "node-a"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Docker.IsEnabled() {
+		t.Error("absent docker configuration must mean enabled")
+	}
+	if cfg.Docker.SocketPath() != DefaultDockerSocket {
+		t.Errorf("socket = %q", cfg.Docker.SocketPath())
+	}
+	if cfg.Docker.PollInterval() != DefaultDockerPollSeconds*time.Second {
+		t.Errorf("poll interval = %s", cfg.Docker.PollInterval())
+	}
+}
+
+func TestDockerCanBeDisabledAndTuned(t *testing.T) {
+	cfg, err := Load(writeConfig(t, `{
+		"docker": {
+			"enabled": false,
+			"socket": "/run/user/1000/docker.sock",
+			"network": "corenet",
+			"poll_interval_seconds": 2
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Docker.IsEnabled() {
+		t.Error("docker should be disabled")
+	}
+	if cfg.Docker.SocketPath() != "/run/user/1000/docker.sock" || cfg.Docker.Network != "corenet" {
+		t.Errorf("docker = %+v", cfg.Docker)
+	}
+	if cfg.Docker.PollInterval() != 2*time.Second {
+		t.Errorf("poll interval = %s", cfg.Docker.PollInterval())
 	}
 }
 

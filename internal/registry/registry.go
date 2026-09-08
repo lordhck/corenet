@@ -20,23 +20,28 @@ var (
 
 // Registry is a safe-for-concurrent-use service directory.
 //
-// A name may be known from several sources at once. Local services always win
-// over services learned from another node, so a node can override anything a
-// peer advertises. Between two nodes advertising the same name, the lowest
-// node ID wins, which keeps resolution deterministic.
+// A name may be known from several sources at once. The precedence is
+// runtime, then configuration, then Docker, then another node: an operator can
+// always override what was discovered, and local services always win over
+// services learned from a peer. Between two nodes advertising the same name,
+// the lowest node ID wins, which keeps resolution deterministic.
 type Registry struct {
-	mu      sync.RWMutex
-	config  map[string]protocol.Service
-	runtime map[string]protocol.Service
-	remote  map[string]map[string]protocol.Service // node ID -> name -> service
+	mu        sync.RWMutex
+	config    map[string]protocol.Service
+	runtime   map[string]protocol.Service
+	docker    map[string]protocol.Service
+	remote    map[string]map[string]protocol.Service // node ID -> name -> service
+	conflicts map[string]protocol.Conflict
 }
 
 // New returns an empty registry.
 func New() *Registry {
 	return &Registry{
-		config:  make(map[string]protocol.Service),
-		runtime: make(map[string]protocol.Service),
-		remote:  make(map[string]map[string]protocol.Service),
+		config:    make(map[string]protocol.Service),
+		runtime:   make(map[string]protocol.Service),
+		docker:    make(map[string]protocol.Service),
+		remote:    make(map[string]map[string]protocol.Service),
+		conflicts: make(map[string]protocol.Conflict),
 	}
 }
 
@@ -77,6 +82,9 @@ func (r *Registry) Add(svc protocol.Service) (protocol.Service, error) {
 	if _, ok := r.runtime[svc.Name]; ok {
 		return protocol.Service{}, fmt.Errorf("%w: %s", ErrConflict, svc.Name)
 	}
+	// A name provided only by Docker is overridden, not refused: the
+	// container's service stays in the directory and is served again when
+	// this registration is removed.
 	r.runtime[svc.Name] = svc
 	return svc, nil
 }
@@ -93,6 +101,9 @@ func (r *Registry) Remove(name string) error {
 	}
 	if _, ok := r.config[name]; ok {
 		return fmt.Errorf("%s is configured on this node; edit the configuration file instead", name)
+	}
+	if _, ok := r.docker[name]; ok {
+		return fmt.Errorf("%s is provided by a Docker container; stop the container instead", name)
 	}
 	return fmt.Errorf("%w: %s", ErrNotFound, name)
 }
@@ -118,6 +129,57 @@ func (r *Registry) SetRemote(nodeID string, services []protocol.Service) {
 	r.remote[nodeID] = next
 }
 
+// SetDocker replaces everything discovered from Docker, together with the
+// names Docker cannot provide unambiguously. Like SetRemote it replaces the
+// whole tier, so a container that disappeared needs no special handling.
+func (r *Registry) SetDocker(services []protocol.Service, conflicts []protocol.Conflict) {
+	next := make(map[string]protocol.Service, len(services))
+	for _, svc := range services {
+		svc.Name = protocol.NormalizeName(svc.Name)
+		if protocol.ValidateName(svc.Name) != nil || svc.Address == "" || svc.Port < 1 || svc.Port > 65535 {
+			continue // container metadata is untrusted input
+		}
+		svc.Source = protocol.SourceDocker
+		next[svc.Name] = svc
+	}
+
+	conflicted := make(map[string]protocol.Conflict, len(conflicts))
+	for _, conflict := range conflicts {
+		conflict.Name = protocol.NormalizeName(conflict.Name)
+		if protocol.ValidateName(conflict.Name) != nil {
+			continue
+		}
+		delete(next, conflict.Name) // a conflicted name is never routed
+		conflicted[conflict.Name] = conflict
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.docker, r.conflicts = next, conflicted
+}
+
+// Conflict reports whether a name is known but unroutable, and why.
+func (r *Registry) Conflict(name string) (protocol.Conflict, bool) {
+	name = protocol.NormalizeName(name)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	conflict, ok := r.conflicts[name]
+	return conflict, ok
+}
+
+// Conflicts lists every unroutable name, sorted by name.
+func (r *Registry) Conflicts() []protocol.Conflict {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	conflicts := make([]protocol.Conflict, 0, len(r.conflicts))
+	for _, conflict := range r.conflicts {
+		conflicts = append(conflicts, conflict)
+	}
+	sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].Name < conflicts[j].Name })
+	return conflicts
+}
+
 // Lookup returns the service currently serving name.
 func (r *Registry) Lookup(name string) (protocol.Service, bool) {
 	name = protocol.NormalizeName(name)
@@ -127,6 +189,9 @@ func (r *Registry) Lookup(name string) (protocol.Service, bool) {
 		return svc, true
 	}
 	if svc, ok := r.config[name]; ok {
+		return svc, true
+	}
+	if svc, ok := r.docker[name]; ok {
 		return svc, true
 	}
 	for _, nodeID := range r.sortedNodeIDs() {
@@ -143,12 +208,15 @@ func (r *Registry) List() []protocol.Service {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	merged := make(map[string]protocol.Service, len(r.config)+len(r.runtime))
+	merged := make(map[string]protocol.Service, len(r.config)+len(r.runtime)+len(r.docker))
 	// Lowest precedence first: later writes win.
 	for _, nodeID := range reverse(r.sortedNodeIDs()) {
 		for name, svc := range r.remote[nodeID] {
 			merged[name] = svc
 		}
+	}
+	for name, svc := range r.docker {
+		merged[name] = svc
 	}
 	for name, svc := range r.config {
 		merged[name] = svc
@@ -165,13 +233,17 @@ func (r *Registry) List() []protocol.Service {
 	return services
 }
 
-// ListLocal returns only the services this node serves itself. It is what a
-// node advertises to other nodes: a directory is never relayed onward.
+// ListLocal returns only the services this node serves itself, which is what
+// it advertises to other nodes: a directory is never relayed onward, and a
+// conflicted name is never offered.
 func (r *Registry) ListLocal() []protocol.Service {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	merged := make(map[string]protocol.Service, len(r.config)+len(r.runtime))
+	merged := make(map[string]protocol.Service, len(r.config)+len(r.runtime)+len(r.docker))
+	for name, svc := range r.docker {
+		merged[name] = svc
+	}
 	for name, svc := range r.config {
 		merged[name] = svc
 	}

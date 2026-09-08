@@ -157,3 +157,129 @@ func TestListAndListLocal(t *testing.T) {
 		}
 	}
 }
+
+func dockerSvc(name, address string, port int) protocol.Service {
+	return protocol.Service{Name: name, Address: address, Port: port}
+}
+
+func TestDockerPrecedence(t *testing.T) {
+	r := New()
+	r.SetRemote("node-b", []protocol.Service{dockerSvc("wiki.core", "10.0.0.2", 80)})
+	r.SetDocker([]protocol.Service{dockerSvc("wiki.core", "172.17.0.2", 80)}, nil)
+
+	got, _ := r.Lookup("wiki.core")
+	if got.Address != "172.17.0.2" || got.Source != protocol.SourceDocker {
+		t.Fatalf("docker should beat a remote node: %+v", got)
+	}
+
+	r.SetConfigServices([]protocol.Service{dockerSvc("wiki.core", "127.0.0.1", 8080)})
+	if got, _ := r.Lookup("wiki.core"); got.Source != protocol.SourceConfig {
+		t.Errorf("configuration should beat docker: %+v", got)
+	}
+}
+
+func TestRuntimeRegistrationOverridesDocker(t *testing.T) {
+	r := New()
+	r.SetDocker([]protocol.Service{dockerSvc("wiki.core", "172.17.0.2", 80)}, nil)
+
+	// Overriding a Docker name is allowed; only config and runtime conflict.
+	if _, err := r.Add(dockerSvc("wiki.core", "127.0.0.1", 9000)); err != nil {
+		t.Fatalf("a Docker name must be overridable: %v", err)
+	}
+	if got, _ := r.Lookup("wiki.core"); got.Address != "127.0.0.1" {
+		t.Errorf("runtime should win: %+v", got)
+	}
+
+	// Removing the override hands the name back to the container.
+	if err := r.Remove("wiki.core"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := r.Lookup("wiki.core")
+	if !ok || got.Address != "172.17.0.2" || got.Source != protocol.SourceDocker {
+		t.Errorf("the docker service should serve again: %+v", got)
+	}
+}
+
+func TestDockerServicesCannotBeRemoved(t *testing.T) {
+	r := New()
+	r.SetDocker([]protocol.Service{dockerSvc("wiki.core", "172.17.0.2", 80)}, nil)
+	err := r.Remove("wiki.core")
+	if err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want a refusal naming the container", err)
+	}
+	if _, ok := r.Lookup("wiki.core"); !ok {
+		t.Error("the service must still be there")
+	}
+}
+
+func TestConflictedNamesAreNotRouted(t *testing.T) {
+	r := New()
+	r.SetDocker(
+		[]protocol.Service{
+			dockerSvc("blog.core", "172.17.0.2", 80),
+			dockerSvc("wiki.core", "172.17.0.3", 80),
+		},
+		[]protocol.Conflict{{Name: "blog.core", Reason: "two containers"}},
+	)
+
+	if _, ok := r.Lookup("blog.core"); ok {
+		t.Error("a conflicted name must not resolve")
+	}
+	for _, svc := range append(r.List(), r.ListLocal()...) {
+		if svc.Name == "blog.core" {
+			t.Error("a conflicted name must not be listed or advertised")
+		}
+	}
+	conflict, ok := r.Conflict("blog.core")
+	if !ok || conflict.Reason == "" {
+		t.Errorf("conflict = %+v, ok = %v", conflict, ok)
+	}
+	if conflicts := r.Conflicts(); len(conflicts) != 1 || conflicts[0].Name != "blog.core" {
+		t.Errorf("Conflicts = %+v", conflicts)
+	}
+	if _, ok := r.Lookup("wiki.core"); !ok {
+		t.Error("the other container should be unaffected")
+	}
+}
+
+func TestConflictClearsWhenDockerReports(t *testing.T) {
+	r := New()
+	r.SetDocker(nil, []protocol.Conflict{{Name: "blog.core", Reason: "two containers"}})
+	if _, ok := r.Conflict("blog.core"); !ok {
+		t.Fatal("the conflict was not recorded")
+	}
+	r.SetDocker([]protocol.Service{dockerSvc("blog.core", "172.17.0.2", 80)}, nil)
+	if _, ok := r.Conflict("blog.core"); ok {
+		t.Error("the conflict should have cleared")
+	}
+	if _, ok := r.Lookup("blog.core"); !ok {
+		t.Error("the remaining container should route again")
+	}
+}
+
+func TestConflictDoesNotBlockALocalService(t *testing.T) {
+	r := New()
+	r.SetConfigServices([]protocol.Service{dockerSvc("blog.core", "127.0.0.1", 8080)})
+	r.SetDocker(nil, []protocol.Conflict{{Name: "blog.core", Reason: "two containers"}})
+
+	got, ok := r.Lookup("blog.core")
+	if !ok || got.Source != protocol.SourceConfig {
+		t.Errorf("a configured service must still be routed: %+v", got)
+	}
+	if _, ok := r.Conflict("blog.core"); !ok {
+		t.Error("the docker conflict should still be reported")
+	}
+}
+
+func TestSetDockerIgnoresInvalidContainers(t *testing.T) {
+	r := New()
+	r.SetDocker([]protocol.Service{
+		dockerSvc("wiki.test", "172.17.0.2", 80),
+		dockerSvc("bad.core", "", 80),
+		dockerSvc("worse.core", "172.17.0.2", 0),
+		dockerSvc("good.core", "172.17.0.2", 80),
+	}, nil)
+	if list := r.ListLocal(); len(list) != 1 || list[0].Name != "good.core" {
+		t.Errorf("ListLocal = %+v, want only good.core", list)
+	}
+}

@@ -169,3 +169,69 @@ func TestControlAPIListsEverythingAndNodes(t *testing.T) {
 		t.Errorf("unknown endpoint: status = %d, want 404", rec.Code)
 	}
 }
+
+func TestConflictedNameIsReportedNotResolved(t *testing.T) {
+	api, reg := testAPI(t)
+	reg.SetDocker(nil, []protocol.Conflict{{Name: "blog.core", Reason: "claimed by 2 Docker containers"}})
+	mux := api.ControlMux()
+
+	rec := call(t, mux, http.MethodGet, "/v1/resolve?name=blog.core", "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	body := decode[protocol.ErrorResponse](t, rec)
+	if body.Error.Code != protocol.CodeConflict || !strings.Contains(body.Error.Message, "2 Docker containers") {
+		t.Errorf("error = %+v, want the conflict reason", body.Error)
+	}
+
+	list := decode[protocol.ServiceList](t, call(t, mux, http.MethodGet, "/v1/services", ""))
+	if len(list.Services) != 0 {
+		t.Errorf("a conflicted name must not be a service: %+v", list.Services)
+	}
+	if len(list.Conflicts) != 1 || list.Conflicts[0].Name != "blog.core" {
+		t.Errorf("conflicts = %+v", list.Conflicts)
+	}
+}
+
+func TestPeerListenerHidesConflicts(t *testing.T) {
+	api, reg := testAPI(t)
+	reg.SetDocker(nil, []protocol.Conflict{{Name: "blog.core", Reason: "claimed by 2 Docker containers"}})
+
+	list := decode[protocol.ServiceList](t, call(t, api.PeerMux(), http.MethodGet, "/v1/services", ""))
+	if len(list.Conflicts) != 0 {
+		t.Errorf("a node must not advertise its conflicts: %+v", list.Conflicts)
+	}
+}
+
+func TestDockerServiceCannotBeRemovedThroughTheAPI(t *testing.T) {
+	api, reg := testAPI(t)
+	reg.SetDocker([]protocol.Service{{Name: "wiki.core", Address: "172.17.0.2", Port: 80}}, nil)
+
+	rec := call(t, api.ControlMux(), http.MethodDelete, "/v1/services/wiki.core", "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	if body := decode[protocol.ErrorResponse](t, rec); !strings.Contains(body.Error.Message, "container") {
+		t.Errorf("the message should point at the container: %q", body.Error.Message)
+	}
+}
+
+func TestDockerNameCanBeOverriddenByRegistration(t *testing.T) {
+	api, reg := testAPI(t)
+	reg.SetDocker([]protocol.Service{{Name: "wiki.core", Address: "172.17.0.2", Port: 80}}, nil)
+	mux := api.ControlMux()
+
+	rec := call(t, mux, http.MethodPost, "/v1/services", `{"name":"wiki.core","address":"127.0.0.1","port":9000}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", rec.Code, rec.Body)
+	}
+	if svc := decode[protocol.Service](t, call(t, mux, http.MethodGet, "/v1/resolve?name=wiki.core", "")); svc.Address != "127.0.0.1" {
+		t.Errorf("the registration should win: %+v", svc)
+	}
+	if rec := call(t, mux, http.MethodDelete, "/v1/services/wiki.core", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("removal: status = %d", rec.Code)
+	}
+	if svc := decode[protocol.Service](t, call(t, mux, http.MethodGet, "/v1/resolve?name=wiki.core", "")); svc.Source != protocol.SourceDocker {
+		t.Errorf("the container should serve again: %+v", svc)
+	}
+}

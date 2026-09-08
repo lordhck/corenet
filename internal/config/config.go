@@ -35,6 +35,12 @@ const (
 // DefaultPullSeconds is how often a node refreshes its peers' directories.
 const DefaultPullSeconds = 30
 
+// Docker discovery defaults.
+const (
+	DefaultDockerSocket      = "/var/run/docker.sock"
+	DefaultDockerPollSeconds = 5
+)
+
 // Config is the whole of corenetd's configuration.
 type Config struct {
 	Node     Node               `json:"node"`
@@ -46,6 +52,8 @@ type Config struct {
 	// Zero means DefaultPullSeconds.
 	PullIntervalSeconds int `json:"pull_interval_seconds,omitempty"`
 
+	Docker Docker `json:"docker"`
+
 	// Path is where this configuration was read from. Empty when defaults
 	// were used.
 	Path string `json:"-"`
@@ -55,6 +63,57 @@ type Config struct {
 type Node struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
+}
+
+// Docker configures Docker service discovery.
+//
+// Discovery is on by default, but only takes effect when the socket is
+// actually there: a node without Docker runs exactly as it did in 0.1.
+type Docker struct {
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Socket is the Docker API socket.
+	Socket string `json:"socket,omitempty"`
+
+	// Network is the preferred Docker network to take container addresses
+	// from. Empty means choose automatically.
+	Network string `json:"network,omitempty"`
+
+	// PollIntervalSeconds is how often containers are re-read. Zero means
+	// DefaultDockerPollSeconds.
+	PollIntervalSeconds int `json:"poll_interval_seconds,omitempty"`
+}
+
+// IsEnabled reports whether Docker discovery should run. Absent configuration
+// means enabled, as required by specs-0.2 section 19.
+func (d Docker) IsEnabled() bool {
+	return d.Enabled == nil || *d.Enabled
+}
+
+// SocketPath is the configured socket, or the Docker default.
+func (d Docker) SocketPath() string {
+	if d.Socket == "" {
+		return DefaultDockerSocket
+	}
+	return d.Socket
+}
+
+// Equal compares two Docker configurations by meaning. The Enabled pointer
+// must not be compared directly: two configurations that say the same thing
+// hold different pointers.
+func (d Docker) Equal(other Docker) bool {
+	return d.IsEnabled() == other.IsEnabled() &&
+		d.SocketPath() == other.SocketPath() &&
+		d.Network == other.Network &&
+		d.PollInterval() == other.PollInterval()
+}
+
+// PollInterval is how often containers are re-read.
+func (d Docker) PollInterval() time.Duration {
+	if d.PollIntervalSeconds <= 0 {
+		return DefaultDockerPollSeconds * time.Second
+	}
+	return time.Duration(d.PollIntervalSeconds) * time.Second
 }
 
 // Listen holds the daemon's listen addresses. An empty DNS, HTTP or Peer
@@ -171,6 +230,9 @@ func (c *Config) Validate() error {
 
 	if c.PullIntervalSeconds < 0 {
 		return fmt.Errorf("pull_interval_seconds must not be negative")
+	}
+	if c.Docker.PollIntervalSeconds < 0 {
+		return fmt.Errorf("docker.poll_interval_seconds must not be negative")
 	}
 
 	for _, endpoint := range c.Nodes {

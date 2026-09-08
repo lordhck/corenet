@@ -21,6 +21,8 @@ type Directory interface {
 	Add(svc protocol.Service) (protocol.Service, error)
 	Remove(name string) error
 	CountRemote(nodeID string) int
+	Conflict(name string) (protocol.Conflict, bool)
+	Conflicts() []protocol.Conflict
 }
 
 type targetKey struct{}
@@ -46,6 +48,13 @@ func NewProxy(dir Directory, logger *log.Logger) http.Handler {
 		name := hostName(r.Host)
 		svc, ok := dir.Lookup(name)
 		if !ok {
+			// A conflicted name exists but must not be routed, and an
+			// operator deserves to be told which it is.
+			if conflict, conflicted := dir.Conflict(name); conflicted {
+				writeErrorPage(w, http.StatusConflict, "Conflicting service",
+					fmt.Sprintf("%s is not routed: %s.", name, conflict.Reason))
+				return
+			}
 			writeErrorPage(w, http.StatusNotFound, "Unknown service",
 				fmt.Sprintf("%s is not registered on this CoreNet node.", name))
 			return

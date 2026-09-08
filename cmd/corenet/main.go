@@ -160,16 +160,33 @@ func service(opts *options, args []string) error {
 		if err := c.get("/v1/services", &list, opts.json); err != nil || opts.json {
 			return err
 		}
-		if len(list.Services) == 0 {
+		if len(list.Services) == 0 && len(list.Conflicts) == 0 {
 			fmt.Println("no services")
 			return nil
 		}
-		w := newTable()
-		fmt.Fprintln(w, "NAME\tADDRESS\tSOURCE")
-		for _, svc := range list.Services {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", svc.Name, svc.Addr(), svc.Source)
+		if len(list.Services) > 0 {
+			w := newTable()
+			fmt.Fprintln(w, "NAME\tADDRESS\tSOURCE")
+			for _, svc := range list.Services {
+				fmt.Fprintf(w, "%s\t%s\t%s\n", svc.Name, svc.Addr(), svc.Source)
+			}
+			if err := w.Flush(); err != nil {
+				return err
+			}
 		}
-		return w.Flush()
+		// Names this node knows but refuses to route.
+		if len(list.Conflicts) > 0 {
+			fmt.Println()
+			w := newTable()
+			fmt.Fprintln(w, "CONFLICT\tREASON")
+			for _, conflict := range list.Conflicts {
+				fmt.Fprintf(w, "%s\t%s\n", conflict.Name, conflict.Reason)
+			}
+			if err := w.Flush(); err != nil {
+				return err
+			}
+		}
+		return nil
 
 	case "add":
 		if len(args) != 4 {

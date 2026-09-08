@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"corenet/internal/config"
+	"corenet/internal/discovery"
 	coredns "corenet/internal/dns"
 	"corenet/internal/registry"
 	"corenet/pkg/protocol"
@@ -34,6 +35,7 @@ type Daemon struct {
 
 	registry *registry.Registry
 	peers    *Peers
+	docker   *discovery.Docker
 
 	dns        *coredns.Server
 	httpSrv    *http.Server
@@ -52,6 +54,10 @@ func New(cfg config.Config, logger *log.Logger) *Daemon {
 		registry: reg,
 	}
 	d.peers = NewPeers(reg, cfg.Node.ID, cfg.Nodes, cfg.PullInterval(), logger)
+	if cfg.Docker.IsEnabled() {
+		d.docker = discovery.NewDocker(reg, cfg.Docker.SocketPath(), cfg.Docker.Network,
+			cfg.Docker.PollInterval(), logger)
+	}
 	return d
 }
 
@@ -82,6 +88,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.logger.Printf("corenetd %s: node %s", protocol.Version, cfg.Node.ID)
 	if len(cfg.Nodes) > 0 {
 		go d.peers.Run(ctx)
+	}
+	if d.docker != nil {
+		d.logger.Printf("docker: discovering services through %s", cfg.Docker.SocketPath())
+		go d.docker.Run(ctx)
+	} else {
+		d.logger.Print("docker: discovery disabled")
 	}
 
 	<-ctx.Done()
@@ -212,10 +224,12 @@ func (d *Daemon) Reload(path string) error {
 	}
 	current := d.config()
 	if cfg.Listen != current.Listen || cfg.Node.ID != current.Node.ID ||
-		cfg.PullIntervalSeconds != current.PullIntervalSeconds {
-		d.logger.Print("reload: listen addresses, node id and pull interval are only applied on restart")
+		cfg.PullIntervalSeconds != current.PullIntervalSeconds || !cfg.Docker.Equal(current.Docker) {
+		d.logger.Print("reload: listen addresses, node id, pull interval and docker settings " +
+			"are only applied on restart")
 		cfg.Listen, cfg.Node = current.Listen, current.Node
 		cfg.PullIntervalSeconds = current.PullIntervalSeconds
+		cfg.Docker = current.Docker
 	}
 
 	d.mu.Lock()

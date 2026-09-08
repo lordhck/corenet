@@ -50,7 +50,7 @@ Applications remain independent.
 
 ```text
 - [x] 0.1  Network foundation
-- [] 0.2  Docker + service discovery
+- [x] 0.2  Docker + service discovery
 - [] 0.3  Identity + domains + DNS
 - [] 0.4  Search + crawler
 - [] 0.5  Federation
@@ -78,12 +78,11 @@ CoreNet is inspired by the simplicity of the early web.
 
 ## Try it
 
-CoreNet 0.1 needs Go and nothing else. It runs on unprivileged ports without
-touching a single system file:
+CoreNet needs Go, and Docker only if you want container discovery. It runs on
+unprivileged ports without touching a single system file:
 
 ```bash
-go build -o corenetd ./cmd/corenetd
-go build -o corenet  ./cmd/corenet
+make build          # or: go build -o corenetd ./cmd/corenetd
 
 python3 -m http.server 8081 --directory examples/hello &
 ./corenetd --config examples/config/dev.json &
@@ -91,6 +90,20 @@ python3 -m http.server 8081 --directory examples/hello &
 ./corenet --socket /tmp/corenet/corenetd.sock service list
 curl -H 'Host: hello.core' http://127.0.0.1:8080/
 ```
+
+Containers become services on their own, with three labels and no CoreNet
+command at all:
+
+```bash
+docker run -d --label corenet.name=wiki.core \
+  --label corenet.service=http --label corenet.port=80 nginx:alpine
+
+./corenet --socket /tmp/corenet/corenetd.sock service list
+curl -H 'Host: wiki.core' http://127.0.0.1:8080/
+```
+
+The same three labels work in `compose.yaml`. Stop the container and the name
+goes with it.
 
 To reach `http://hello.core` from a browser, install
 [`examples/config/node.json`](examples/config/node.json) as
@@ -105,25 +118,29 @@ sudo corenet connect
 routes only the `.core` domain to the local daemon. `sudo corenet disconnect`
 removes it.
 
-End-to-end check, including a two-node network:
+End-to-end check, including a two-node network and Docker:
 
 ```bash
-go test ./...
-test/smoke.sh
+make check          # vet, race tests, then the end-to-end smoke test
 ```
+
+`make help` lists the rest. Nothing in CoreNet depends on Make; the targets are
+thin wrappers around `go` and `test/smoke.sh`.
 
 ## Status
 
 **Pre-alpha**
 
-0.1 is implemented: the `corenet` CLI, the `corenetd` daemon, `.core`
-resolution, HTTP services, a local directory, and directory exchange between
-statically configured nodes. There is no TLS, no identity and no domain
-ownership yet — `https://` arrives in 0.7, identity in 0.3.
+0.1 and 0.2 are implemented: the `corenet` CLI, the `corenetd` daemon, `.core`
+resolution, HTTP services, a local directory, directory exchange between
+statically configured nodes, and automatic service discovery from Docker
+labels. There is no TLS, no identity and no domain ownership yet — `https://`
+arrives in 0.7, identity in 0.3.
 
 See:
 
-* [`docs/specs/specs-0.1.md`](docs/specs/specs-0.1.md) — what 0.1 does
+* [`docs/specs/specs-0.1.md`](docs/specs/specs-0.1.md) — the network foundation
+* [`docs/specs/specs-0.2.md`](docs/specs/specs-0.2.md) — Docker discovery
 * [`docs/roadmap.md`](docs/roadmap.md)
 * [`docs/specifications.md`](docs/specifications.md)
 

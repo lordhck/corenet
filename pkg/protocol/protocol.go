@@ -8,17 +8,18 @@ import (
 )
 
 // Version is the CoreNet protocol version implemented by this build.
-const Version = "0.1"
+const Version = "0.2"
 
 // TLD is the CoreNet namespace. Names outside it are not CoreNet names.
 const TLD = "core"
 
-// Service sources. A service comes either from the local configuration file,
-// from a runtime registration, or from another node (in which case Source is
-// that node's ID).
+// Service sources. A service comes from the local configuration file, from a
+// runtime registration, from a Docker container, or from another node (in
+// which case Source is that node's ID).
 const (
 	SourceConfig  = "config"
 	SourceRuntime = "runtime"
+	SourceDocker  = "docker"
 )
 
 // Service is one reachable CoreNet service.
@@ -74,9 +75,20 @@ type Info struct {
 	Services int    `json:"services"`
 }
 
+// Conflict is a name this node knows but refuses to route, because more than
+// one Docker container claims it.
+type Conflict struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
+
 // ServiceList is the answer to GET /v1/services.
+//
+// Conflicts are reported on the control socket only: a name this node cannot
+// route is not a name it offers to other nodes.
 type ServiceList struct {
-	Services []Service `json:"services"`
+	Services  []Service  `json:"services"`
+	Conflicts []Conflict `json:"conflicts,omitempty"`
 }
 
 // NodeList is the answer to GET /v1/nodes.

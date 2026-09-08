@@ -187,6 +187,41 @@ else
 fi
 
 echo
+echo "-- docker discovery --"
+if [ -S /var/run/docker.sock ] && docker info >/dev/null 2>&1; then
+	name="corenet-smoke-$$"
+	if docker run -d --rm --name "$name" \
+		--label corenet.name=smoke.core \
+		--label corenet.service=http \
+		--label corenet.port=80 \
+		nginx:alpine >/dev/null 2>&1; then
+
+		if wait_for 20 corenet_a resolve smoke.core; then
+			contains "a labelled container becomes a service" "docker" "$(corenet_a resolve smoke.core)"
+			contains "it is served through the proxy" "nginx" \
+				"$(curl -s -D - -o /dev/null -H 'Host: smoke.core' "http://127.0.0.1:$HTTP_PORT/")"
+			contains "it cannot be removed through the API" "container" \
+				"$(corenet_a service remove smoke.core 2>&1)"
+		else
+			printf 'FAIL %s\n' "a labelled container becomes a service"
+			failures=$((failures + 1))
+		fi
+
+		docker rm -f "$name" >/dev/null 2>&1
+		if wait_while 20 corenet_a resolve smoke.core; then
+			printf 'ok   %s\n' "the service goes when the container goes"
+		else
+			printf 'FAIL %s\n' "the service goes when the container goes"
+			failures=$((failures + 1))
+		fi
+	else
+		echo "skip could not start a test container; skipping the Docker checks"
+	fi
+else
+	echo "skip Docker is not available; skipping the Docker checks"
+fi
+
+echo
 if [ "$failures" -eq 0 ]; then
 	echo "all checks passed"
 else
